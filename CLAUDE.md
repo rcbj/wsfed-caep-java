@@ -33,7 +33,7 @@ JUnit 5 covers the stub IdP (a signed SAML assertion the library accepts), repla
 
 ## Layout
 
-`src/main/java/com/iyasec/wsfed` library (`ssf` is the poll receiver). `src/test/java` JUnit. `com.iyasec.wsfed.demo.Demo` is the JDK HTTP server, started with `docker compose up --build`. `scripts/configure_iya_sts.py` registers the demo with iya-sts; the container `PORT` wins over the shell `PORT`. `Dockerfile` and comment-free `docker-compose.yml` use `network_mode: host`, `ENV PORT=3000`, and a health check of `http://127.0.0.1:${PORT}/healthz`.
+Two Maven modules under an aggregator `pom.xml`, which builds both and is never published; keep its version, the library's and the demo's equal to `VERSION`. `library/` is `com.iyasec:wsfed-caep`, the library alone: its `pom.xml` inherits nothing, so it is complete as published, and its jar carries no demo class. `library/src/main/java/com/iyasec/wsfed` library (`ssf` is the poll receiver). `library/src/test/java` JUnit. `library/src/test-fixtures` holds `StubIdp` and its key files, which both modules' tests compile (build-helper) and no published jar carries. `demo/` is `com.iyasec:wsfed-caep-demo`, never published: `HttpDemoTest` and `TrustChainTest` (run from the repository root) are its tests, and its jar and `target/dependency` (the library among them) are what the image runs as `wsfed-caep.jar:dependency/*`. `com.iyasec.wsfed.demo.Demo` is the JDK HTTP server, started with `docker compose up --build`. `scripts/configure_iya_sts.py` registers the demo with iya-sts; the container `PORT` wins over the shell `PORT`. `Dockerfile` and comment-free `docker-compose.yml` use `network_mode: host`, `ENV PORT=3000`, and a health check of `http://127.0.0.1:${PORT}/healthz`.
 
 ## Demo
 

@@ -55,10 +55,10 @@ The suite runs in a container. It includes a stub identity provider. It does not
 
 ## Layout
 
-- `src/main/java/com/iyasec/wsfed` library
-- `src/main/java/com/iyasec/wsfed/ssf` poll receiver
-- `src/test/java` JUnit 5, fixtures, stub identity provider
-- `src/main/java/com/iyasec/wsfed/demo/Demo.java` JDK HTTP demo
+- `library/` the library, `com.iyasec:wsfed-caep`, nothing else in its jar
+- `library/src/main/java/com/iyasec/wsfed` library; `.../ssf` poll receiver
+- `library/src/test/java` JUnit 5; `library/src/test-fixtures` the stub identity provider and its keys, shared with the demo's tests
+- `demo/` the demo module, never published: `demo/src/main/java/com/iyasec/wsfed/demo/Demo.java` JDK HTTP demo
 - `scripts/configure_iya_sts.py` registration plan for iya-sts; writes `idpCa`
 - `scripts/trust_chain.py` fetches and saves the iya-sts listener CA trust chain
 - `Dockerfile`, `docker-compose.yml` (`network_mode: host`, `PORT=3000`)
