@@ -51,7 +51,7 @@ docker build --target test .
 
 The suite runs in a container. It includes a stub identity provider. It does not need a live iya-sts. XML signatures use Santuario canonicalization and JDK RSA. The Shared Signals JWS uses Nimbus.
 
-`python3 scripts/live_iya_sts.py` is the live half. It builds this demo image, starts a fresh iya-sts when `IYA_STS_URL` is unset, registers the demo with host `python3`, signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. iya-sts main sets the WS-Federation assertion SessionIndex to the assertion id. The CAEP session-revoked subject names the sign-on session, so the index lookup finds nobody. This demo then ends its one session from the event handler. The script does not bind port 3000 or 8081, and it does not run Java or Maven on the host. Key generation runs inside the demo image. The nightly workflow, cron `51 6 * * *` plus a manual run, runs the unit suite and this script.
+`python3 scripts/live_iya_sts.py` is the live half. It starts a fresh iya-sts when `IYA_STS_URL` is unset (or from `IYA_STS_IMAGE`), copies the checkout to a scratch build context without `demo/generated`, builds the demo image, generates the key pair inside it, runs the install script with host `python3` (which writes `idpCa`'s chain), builds the image again so it carries that chain, checks the image holds the chain and no key, and runs the demo with only the key pair and IdP metadata mounted. It then signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. iya-sts main sets the WS-Federation assertion SessionIndex to the assertion id. The CAEP session-revoked subject names the sign-on session, so the index lookup finds nobody. This demo then ends its one session from the event handler. The script does not bind port 3000, 8081 or 18481-18495 (defaults: `LIVE_STS_PORT=18553`, `LIVE_DEMO_PORT=18653`), passes secrets to docker as `-e NAME` only, logs each sign-in request by a fixed label rather than its URL, and does not run Java or Maven on the host. Key generation runs inside the demo image. The nightly workflow, cron `51 6 * * *` plus a manual run, runs the unit suite and this script.
 
 ## Layout
 
@@ -59,7 +59,8 @@ The suite runs in a container. It includes a stub identity provider. It does not
 - `src/main/java/com/iyasec/wsfed/ssf` poll receiver
 - `src/test/java` JUnit 5, fixtures, stub identity provider
 - `src/main/java/com/iyasec/wsfed/demo/Demo.java` JDK HTTP demo
-- `scripts/configure_iya_sts.py` registration plan for iya-sts
+- `scripts/configure_iya_sts.py` registration plan for iya-sts; writes `idpCa`
+- `scripts/trust_chain.py` fetches and saves the iya-sts listener CA trust chain
 - `Dockerfile`, `docker-compose.yml` (`network_mode: host`, `PORT=3000`)
 
 ## Demo
@@ -67,6 +68,13 @@ The suite runs in a container. It includes a stub identity provider. It does not
 `PORT` defaults to 3000. A loopback realm and reply URL follow that port. Any other host stays as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. The default `http://localhost:3000` is not an explicit public URL. `GET /healthz` returns `200` and the body `ok` even when generated keys are absent. `GET /login` redirects to the identity provider with `wa=wsignin1.0`, `wtrealm`, `wreply`, and `wctx`. The reply URL accepts the sign-in POST and `wsignoutcleanup1.0`. `POST /logout` signs out, including at the identity provider. `GET /live-status` is JSON: `signedIn`, `subject`, `receiver`, and `events` of `type` and `jti`. It records every accepted Shared Signals event and does not include tokens. A session-revoked event that names no indexed session ends this demo's one session, so `signedIn` is false.
 
 Demo JSON uses `file:` paths under `demo/generated/`. Those keys are not in the tree. `"signals"` is omitted, so the receiver is on when a transmitter is configured.
+
+
+## The iya-sts trust chain (`idpCa`)
+
+`idpCa` (demo default `file:generated/idp-ca.pem`) is the iya-sts TLS listener CA trust chain. `scripts/configure_iya_sts.py` writes it on every run: the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS Issuing CA, Intermediate, Root), or the chain from the TLS handshake when that is missing (`scripts/trust_chain.py`). It prints the path, the anchor's subject and its SHA-256. The library makes every certificate in the file a PKIX trust anchor, so a reissued listener certificate from the same CA is trusted; a certificate that merely appears in the presented chain proves nothing, and the host name is checked against the leaf as usual.
+
+The demo image build copies that file in (`COPY demo ./demo`; `.dockerignore` admits only `demo/generated/idp-ca.pem` from `demo/generated`), so a demo image built after the install script trusts that iya-sts with no mount and no fetch. Rebuild the image after running the install script against a different iya-sts. A build with no chain file (a fresh clone, CI) still succeeds. The relying party's key, certificate and the IdP metadata never enter the image: `docker-compose.yml` mounts `demo/generated` at run time.
 
 ```sh
 PORT=40123 docker compose up --build
