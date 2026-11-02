@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.iyasec.wsfed.demo.Demo;
+import com.iyasec.wsfed.ssf.SignalsReceiver;
 import com.sun.net.httpserver.HttpServer;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Test;
 class HttpDemoTest {
     private HttpServer server;
     private String base;
+    private Demo.App app;
 
     @BeforeEach
     void start() throws Exception {
@@ -33,7 +35,7 @@ class HttpDemoTest {
                 "privateKey", StubIdp.RP_KEY,
                 "certificate", StubIdp.RP_CERT,
                 "idpMetadata", StubIdp.idpMetadata()));
-        Demo.App app = new Demo.App(rp);
+        app = new Demo.App(rp);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setExecutor(Executors.newCachedThreadPool());
         server.createContext("/", exchange -> {
@@ -90,12 +92,69 @@ class HttpDemoTest {
     }
 
     @Test
+    void liveStatusRecordsEventsAndSessionRevokedEndsTheOnlySession() throws Exception {
+        String idle = body(open("GET", "/live-status", null, null));
+        Map<String, Object> before = Json.object(Json.parse(idle));
+        assertEquals(Boolean.FALSE, before.get("signedIn"));
+        assertEquals(List.of(), before.get("events"));
+        assertEquals("not configured", before.get("receiver"));
+        assertTrue(!idle.contains("token") && !idle.contains("wresult"));
+
+        HttpURLConnection login = open("GET", "/login", null, null);
+        Map<String, String> params = query(URI.create(login.getHeaderField("Location")).getRawQuery());
+        String pending = cookie(login, "wsfed_pending");
+        String form = "wa=wsignin1.0&wresult=" + URLEncoder.encode(StubIdp.wresult(), StandardCharsets.UTF_8)
+                + "&wctx=" + URLEncoder.encode(params.get("wctx"), StandardCharsets.UTF_8);
+        HttpURLConnection reply = open("POST", "/wsfed", form, "wsfed_pending=" + pending);
+        String sid = cookie(reply, "sid");
+
+        SignalsReceiver.SignalEvent credential = new SignalsReceiver.SignalEvent();
+        credential.type = "https://schemas.openid.net/secevent/caep/event-type/credential-change";
+        credential.jti = "cred-1";
+        credential.sessions = List.of();
+        app.remember(credential);
+        Map<String, Object> signedIn = Json.object(Json.parse(body(open("GET", "/live-status", null, "sid=" + sid))));
+        assertEquals(Boolean.TRUE, signedIn.get("signedIn"));
+        assertEquals("alice-1234", signedIn.get("subject"));
+
+        SignalsReceiver.SignalEvent matched = new SignalsReceiver.SignalEvent();
+        matched.type = "https://schemas.openid.net/secevent/caep/event-type/session-revoked";
+        matched.jti = "rev-matched";
+        matched.sessions = List.of("someone-else");
+        app.remember(matched);
+        Map<String, Object> still = Json.object(Json.parse(body(open("GET", "/live-status", null, "sid=" + sid))));
+        assertEquals(Boolean.TRUE, still.get("signedIn"));
+
+        SignalsReceiver.SignalEvent revoked = new SignalsReceiver.SignalEvent();
+        revoked.type = "https://schemas.openid.net/secevent/caep/event-type/session-revoked";
+        revoked.jti = "rev-1";
+        revoked.sessions = List.of();
+        app.remember(revoked);
+        String endedRaw = body(open("GET", "/live-status", null, "sid=" + sid));
+        Map<String, Object> ended = Json.object(Json.parse(endedRaw));
+        assertEquals(Boolean.FALSE, ended.get("signedIn"));
+        assertEquals(null, ended.get("subject"));
+        List<?> events = (List<?>) ended.get("events");
+        assertEquals(3, events.size());
+        assertEquals("https://schemas.openid.net/secevent/caep/event-type/credential-change", ((Map<?, ?>) events.get(0)).get("type"));
+        assertEquals("cred-1", ((Map<?, ?>) events.get(0)).get("jti"));
+        assertEquals("https://schemas.openid.net/secevent/caep/event-type/session-revoked", ((Map<?, ?>) events.get(2)).get("type"));
+        assertEquals("rev-1", ((Map<?, ?>) events.get(2)).get("jti"));
+        assertTrue(!endedRaw.contains("token") && !endedRaw.contains("wresult"));
+    }
+
+    @Test
     void loopbackRealmFollowsPortAndOtherHostsStay() {
         assertEquals("http://localhost:45124/", Demo.onPort("http://localhost:3000/", 45124));
         assertEquals("https://idp.example/wsfed", Demo.onPort("https://idp.example/wsfed", 45124));
         Map<String, String> moved = Demo.endpoints("http://localhost:3000/", "http://localhost:3000/wsfed", "https://app.example", true, 45124);
         assertEquals("https://app.example/", moved.get("realm"));
         assertEquals("https://app.example/wsfed", moved.get("replyUrl"));
+    }
+
+    private static String body(HttpURLConnection conn) throws Exception {
+        assertEquals(200, conn.getResponseCode());
+        return new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     }
 
     private HttpURLConnection open(String method, String path, String body, String cookie) throws Exception {

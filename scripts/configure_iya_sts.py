@@ -434,6 +434,26 @@ def _ensure_user(base: str, ca: str | None, token: str, username: str, api) -> N
             print(f"Generated password for {username} (shown once): {made['body']['password']}")
 
 
+def _pem_certificate(value):
+    """PEM for a peer certificate. Newer interpreters return an ssl.Certificate, not DER bytes."""
+    if isinstance(value, str):
+        if "BEGIN CERTIFICATE" not in value:
+            raise RuntimeError("the TLS peer certificate is not PEM")
+        text = value.strip()
+        return text if text.endswith("\n") else text + "\n"
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        if raw.lstrip().startswith(b"-----BEGIN CERTIFICATE-----"):
+            return raw.decode("ascii")
+        pem_body = __import__("base64").b64encode(raw).decode()
+        lines = [pem_body[i:i + 64] for i in range(0, len(pem_body), 64)]
+        return "-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n"
+    public_bytes = getattr(value, "public_bytes", None)
+    if public_bytes is None:
+        raise RuntimeError("the TLS peer certificate cannot be encoded")
+    return _pem_certificate(public_bytes())
+
+
 def _fetch_tls_root(origin: str) -> str:
     import socket
 
@@ -446,10 +466,8 @@ def _fetch_tls_root(origin: str) -> str:
     with socket.create_connection((host, port), timeout=15) as sock:
         with context.wrap_socket(sock, server_hostname=host) as tls:
             chain = getattr(tls._sslobj, "get_unverified_chain", lambda: None)()
-            der = chain[-1] if chain else tls.getpeercert(True)
-    pem_body = __import__("base64").b64encode(der if isinstance(der, (bytes, bytearray)) else bytes(der)).decode()
-    lines = [pem_body[i:i + 64] for i in range(0, len(pem_body), 64)]
-    return "-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n"
+            cert = chain[-1] if chain else tls.getpeercert(True)
+    return _pem_certificate(cert)
 
 
 if __name__ == "__main__":

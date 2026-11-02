@@ -51,6 +51,8 @@ docker build --target test .
 
 The suite runs in a container. It includes a stub identity provider. It does not need a live iya-sts. XML signatures use Santuario canonicalization and JDK RSA. The Shared Signals JWS uses Nimbus.
 
+`python3 scripts/live_iya_sts.py` is the live half. It builds this demo image, starts a fresh iya-sts when `IYA_STS_URL` is unset, registers the demo with host `python3`, signs in, and requires a credential-change event and a session-revoked event on `GET /live-status`. The second event ends the local session. iya-sts main sets the WS-Federation assertion SessionIndex to the assertion id. The CAEP session-revoked subject names the sign-on session, so the index lookup finds nobody. This demo then ends its one session from the event handler. The script does not bind port 3000 or 8081, and it does not run Java or Maven on the host. Key generation runs inside the demo image. The nightly workflow, cron `51 6 * * *` plus a manual run, runs the unit suite and this script.
+
 ## Layout
 
 - `src/main/java/com/iyasec/wsfed` library
@@ -62,7 +64,7 @@ The suite runs in a container. It includes a stub identity provider. It does not
 
 ## Demo
 
-`PORT` defaults to 3000. A loopback realm and reply URL follow that port. Any other host stays as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. The default `http://localhost:3000` is not an explicit public URL. `GET /healthz` returns `200` and the body `ok` even when generated keys are absent. `GET /login` redirects to the identity provider with `wa=wsignin1.0`, `wtrealm`, `wreply`, and `wctx`. The reply URL accepts the sign-in POST and `wsignoutcleanup1.0`. `POST /logout` signs out, including at the identity provider.
+`PORT` defaults to 3000. A loopback realm and reply URL follow that port. Any other host stays as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. The default `http://localhost:3000` is not an explicit public URL. `GET /healthz` returns `200` and the body `ok` even when generated keys are absent. `GET /login` redirects to the identity provider with `wa=wsignin1.0`, `wtrealm`, `wreply`, and `wctx`. The reply URL accepts the sign-in POST and `wsignoutcleanup1.0`. `POST /logout` signs out, including at the identity provider. `GET /live-status` is JSON: `signedIn`, `subject`, `receiver`, and `events` of `type` and `jti`. It records every accepted Shared Signals event and does not include tokens. A session-revoked event that names no indexed session ends this demo's one session, so `signedIn` is false.
 
 Demo JSON uses `file:` paths under `demo/generated/`. Those keys are not in the tree. `"signals"` is omitted, so the receiver is on when a transmitter is configured.
 

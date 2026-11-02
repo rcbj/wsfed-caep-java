@@ -29,7 +29,7 @@ docker build --target test .
 
 The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
 
-JUnit 5 covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, and the demo handler. No live iya-sts. `scripts/configure_iya_sts.py` is the same registration script as the Python tree; its plan is exercised there.
+JUnit 5 covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, and the demo handler. The stub tests do not start iya-sts. `python3 scripts/live_iya_sts.py` does, unless `IYA_STS_URL` names one that is already running. It signs the demo in and checks two Shared Signals events on `GET /live-status`. iya-sts main sets the assertion SessionIndex to the assertion id, so a session-revoked subject that names the sign-on session matches nobody. The demo ends its one session from that handler. The nightly workflow, cron `51 6 * * *` plus workflow_dispatch, runs the unit image and that script. It never binds port 3000 or 8081. `scripts/configure_iya_sts.py` is the same registration script as the Python tree; its plan is exercised there. Configure is host Python and does not import this library.
 
 ## Layout
 
@@ -37,4 +37,4 @@ JUnit 5 covers the stub IdP (a signed SAML assertion the library accepts), repla
 
 ## Demo
 
-`PORT` defaults to 3000. Loopback realm and reply URLs follow the running port. Other hosts stay as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `200` and `ok`. The page links to `/login`, which redirects with `wa=wsignin1.0`, `wtrealm`, `wreply`, and `wctx`. The reply URL handles the POST and sign-out cleanup. `POST /logout` signs out. Demo JSON uses `file:` placeholders. Do not commit `demo/generated`.
+`PORT` defaults to 3000. Loopback realm and reply URLs follow the running port. Other hosts stay as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `200` and `ok`. The page links to `/login`, which redirects with `wa=wsignin1.0`, `wtrealm`, `wreply`, and `wctx`. The reply URL handles the POST and sign-out cleanup. `POST /logout` signs out. `GET /live-status` reports `signedIn`, `subject`, the receiver state, and accepted events (`type` and `jti`). It does not include tokens. A session-revoked event whose subject matches no SessionIndex ends this demo's one session. Demo JSON uses `file:` placeholders. Do not commit `demo/generated`.

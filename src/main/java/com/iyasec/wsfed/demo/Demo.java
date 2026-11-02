@@ -4,9 +4,11 @@
 package com.iyasec.wsfed.demo;
 
 import com.iyasec.wsfed.Caught;
+import com.iyasec.wsfed.HttpClient;
 import com.iyasec.wsfed.Json;
 import com.iyasec.wsfed.RelyingParty;
 import com.iyasec.wsfed.WsFedLogin;
+import com.iyasec.wsfed.ssf.Events;
 import com.iyasec.wsfed.ssf.SignalsReceiver;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -23,14 +25,17 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
  * WS-Federation demo. GET /healthz is 200 ok before the identity provider is reachable.
- * A loopback realm and reply URL follow PORT. PUBLIC_URL or --public-url replaces the origin
- * and keeps the path. The default http://localhost:3000 is not an explicit public URL.
+ * GET /live-status is JSON: signedIn, subject, receiver, and accepted events (type and jti).
+ * It does not include tokens. A loopback realm and reply URL follow PORT. PUBLIC_URL or
+ * --public-url replaces the origin and keeps the path. The default http://localhost:3000
+ * is not an explicit public URL.
  */
 public final class Demo {
     private static final byte[] GIF = Base64.getDecoder().decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
@@ -50,7 +55,9 @@ public final class Demo {
     public static final class App {
         private final RelyingParty rp;
         public SignalsReceiver receiver;
+        public String receiverState = "not configured";
         public final Map<String, WsFedLogin> sessions = new LinkedHashMap<>();
+        private final List<Map<String, String>> events = new CopyOnWriteArrayList<>();
         private final byte[] secret = new byte[32];
         private final String replyPath;
         private final String secure;
@@ -75,6 +82,7 @@ public final class Demo {
             String sid = unsign(cookies.get("sid"));
             method = method == null ? "" : method.toUpperCase();
             if ("/healthz".equals(path) && "GET".equals(method)) return text(200, "text/plain", "ok");
+            if ("/live-status".equals(path) && "GET".equals(method)) return liveStatus(sid);
             if ("/login".equals(path) && "GET".equals(method)) {
                 RelyingParty.LoginRequest request = rp.login(Map.of("relayState", "/"));
                 return new Result(302, List.of(
@@ -144,6 +152,43 @@ public final class Demo {
                 }
             }
             return text(404, "text/plain", "Not found");
+        }
+
+        private Result liveStatus(String sid) {
+            WsFedLogin who = sid == null ? null : sessions.get(sid);
+            String subject = who == null || who.nameId == null ? null : who.nameId;
+            List<Map<String, String>> recorded = new ArrayList<>();
+            for (Map<String, String> event : events) {
+                Map<String, String> row = new LinkedHashMap<>();
+                row.put("type", event.get("type"));
+                row.put("jti", event.get("jti"));
+                recorded.add(row);
+            }
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("signedIn", who != null);
+            body.put("subject", subject);
+            body.put("receiver", receiverState);
+            body.put("events", recorded);
+            return new Result(200, headers(
+                    new String[] {"content-type", "application/json"},
+                    new String[] {"cache-control", "no-store"}), Json.stringify(body).getBytes(StandardCharsets.UTF_8));
+        }
+
+        public void remember(SignalsReceiver.SignalEvent event) {
+            Map<String, String> row = new LinkedHashMap<>();
+            row.put("type", event == null || event.type == null ? "" : event.type);
+            row.put("jti", event == null || event.jti == null ? "" : event.jti);
+            events.add(row);
+            // iya-sts main sets the WS-Federation assertion's SessionIndex to the
+            // assertion id. The CAEP session-revoked subject names the sign-on
+            // session instead, so the index finds nobody and the end callback is
+            // not asked to drop this login. This demo has that one session.
+            if (event == null || !Events.EVENT.get("session_revoked").equals(event.type)) return;
+            if (event.sessions != null && !event.sessions.isEmpty()) return;
+            for (String localId : new ArrayList<>(sessions.keySet())) {
+                sessions.remove(localId);
+                if (receiver != null) receiver.untrack(localId);
+            }
         }
 
         private String pending(String value, int age) {
@@ -227,22 +272,54 @@ public final class Demo {
         RelyingParty rp = RelyingParty.fromFile(configPath.toString(), overrides);
         App app = new App(rp, null);
         Object ssf = raw.get("ssf");
-        if (!Boolean.FALSE.equals(raw.get("signals")) && ssf instanceof Map<?, ?> map && map.get("transmitter") != null && rp.config.privateKey != null) {
+        Map<?, ?> map = ssf instanceof Map<?, ?> found ? found : null;
+        if (Boolean.FALSE.equals(raw.get("signals"))) {
+            app.receiverState = "not configured (signals are off)";
+        } else if (map == null || map.get("transmitter") == null) {
+            app.receiverState = "not configured (no ssf block in the configuration file)";
+        } else if (rp.config.privateKey == null || rp.config.certificate == null) {
+            app.receiverState = "not running: the relying party has no private key";
+        } else {
             SignalsReceiver.Options options = new SignalsReceiver.Options();
             Object interval = map.get("pollIntervalMs");
             options.pollIntervalMs = interval instanceof Number number ? number.intValue() : 5000;
+            try {
+                options.tls = clientTls(rp);
+            } catch (Exception err) {
+                Caught.error(err);
+                app.receiverState = "not running: " + err.getMessage();
+                return app;
+            }
             SignalsReceiver receiver = new SignalsReceiver(String.valueOf(map.get("transmitter")), (ids, event) -> {
                 for (String id : ids) app.sessions.remove(id);
             }, options);
+            receiver.on("*", app::remember);
+            app.receiver = receiver;
             try {
                 receiver.start();
-                app.receiver = receiver;
+                Object streamId = receiver.stream() == null ? "" : receiver.stream().get("stream_id");
+                app.receiverState = "polling stream " + streamId + " at " + map.get("transmitter");
             } catch (Exception err) {
                 Caught.error(err);
+                app.receiver = null;
+                app.receiverState = "not running: " + err.getMessage();
                 System.out.println("ssf: not started: " + err.getMessage());
             }
         }
         return app;
+    }
+
+    private static HttpClient.Tls clientTls(RelyingParty rp) throws Exception {
+        HttpClient.Tls tls = new HttpClient.Tls();
+        tls.ca = rp.config.idpCa;
+        tls.cert = pem("CERTIFICATE", rp.config.certificate.getEncoded());
+        tls.key = pem("PRIVATE KEY", rp.config.privateKey.getEncoded());
+        return tls;
+    }
+
+    private static String pem(String label, byte[] der) {
+        String body = Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(der);
+        return "-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n";
     }
 
     public static Map<String, String> endpoints(String realm, String reply, String publicUrl, boolean given, int port) {
