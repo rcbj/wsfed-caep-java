@@ -21,6 +21,8 @@ Omitted or `true` means on. The resolved configuration leaves `signals` null in 
 
 `Caught.error` records a caught exception through `java.lang.System.Logger`, including the stack, and the method then throws the `WsFedError` it already threw. The caught exception is the cause. `Caught.warn` is the same record when the method recovers and does not throw: a later signing key, a poll retry, a false verification, sign-out cleanup, or a handler that must still acknowledge the Security Event Token. A `catch (WsFedError)` that only throws that error again is not logged a second time.
 
+**Plain http (#17).** `HttpClient.send` is the one place every fetch goes through (metadata URL, SSF configuration, JWKS, stream and poll). `refusePlainHttpOffLoopback` refuses plain `http://` to a host that is not loopback (`127.0.0.0/8`, `::1`, `localhost`) before connecting, without resolving a name, naming only the scheme and host[:port]; userinfo is never loopback, and `refuseUnsafeCharacters` refuses whitespace and control characters first. Redirects are not followed (`setInstanceFollowRedirects(false)`), so the checked URL is the only one dialled. No opt-out. `PlainHttpTest` covers it; `http://0.0.0.0:<port>` reaches a 127.0.0.1 listener on Linux, so an empty backlog proves no connection was opened.
+
 ## Tests
 
 ```sh
