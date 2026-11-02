@@ -3,6 +3,7 @@
 
 package com.iyasec.wsfed.ssf;
 
+import com.iyasec.wsfed.Caught;
 import com.iyasec.wsfed.HttpClient;
 import com.iyasec.wsfed.Json;
 import com.iyasec.wsfed.WsFedError;
@@ -145,6 +146,7 @@ public final class SignalsReceiver {
             try {
                 current.join(20_000);
             } catch (InterruptedException err) {
+                Caught.error(err);
                 Thread.currentThread().interrupt();
             }
             thread = null;
@@ -167,6 +169,7 @@ public final class SignalsReceiver {
             try {
                 flight.done.await();
             } catch (InterruptedException err) {
+                Caught.error(err);
                 Thread.currentThread().interrupt();
                 throw new WsFedError("ssf", "the poll was interrupted", err);
             }
@@ -177,6 +180,7 @@ public final class SignalsReceiver {
             flight.result = pollNow();
             return flight.result;
         } catch (RuntimeException err) {
+            Caught.error(err);
             flight.error = err;
             throw err;
         } finally {
@@ -193,6 +197,7 @@ public final class SignalsReceiver {
             try {
                 if (pollOnce()) delay = 0;
             } catch (Exception err) {
+                Caught.warn(err);
                 log.warn("ssf: poll failed: " + err.getMessage());
                 delay = Math.min(pollIntervalMs * 4L, 60_000);
             }
@@ -200,6 +205,7 @@ public final class SignalsReceiver {
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException err) {
+                Caught.warn(err);
                 return;
             }
         }
@@ -241,6 +247,7 @@ public final class SignalsReceiver {
                     handle(jti, String.valueOf(entry.getValue()));
                     synchronized (ack) { ack.add(jti); }
                 } catch (Exception err) {
+                    Caught.warn(err);
                     log.warn("ssf: SET " + jti + " refused: " + err.getMessage());
                     String code = err instanceof WsFedError wsfed && "signature".equals(wsfed.code) ? "invalid_key" : "invalid_request";
                     Map<String, Object> problem = new LinkedHashMap<>();
@@ -301,6 +308,7 @@ public final class SignalsReceiver {
                 try {
                     onEnd.end(sessions, event);
                 } catch (Exception err) {
+                    Caught.error(err);
                     log.error("ssf: onEndSessions threw for " + eventType + " (SET " + jti + " is still acknowledged): " + err.getMessage());
                     event.ended = false;
                 }
@@ -315,6 +323,7 @@ public final class SignalsReceiver {
                 try {
                     handler.accept(event);
                 } catch (Exception err) {
+                    Caught.error(err);
                     log.error("ssf: a handler for " + eventType + " threw (SET " + jti + " is still acknowledged): " + err.getMessage());
                 }
             }

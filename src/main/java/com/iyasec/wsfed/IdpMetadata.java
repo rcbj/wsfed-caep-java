@@ -93,6 +93,7 @@ public final class IdpMetadata {
             try {
                 body = Xmls.pemBody(new String(certificate.getEncoded() == null ? new byte[0] : pemOf(certificate).getBytes(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII));
             } catch (Exception ignored) {
+                Caught.error(ignored);
                 body = "";
             }
             String pem = pemOf(certificate);
@@ -122,12 +123,16 @@ public final class IdpMetadata {
             String body = java.util.Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(certificate.getEncoded());
             return "-----BEGIN CERTIFICATE-----\n" + body + "\n-----END CERTIFICATE-----\n";
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("metadata", "the relying party certificate cannot be encoded", err);
         }
     }
 
     private static byte[] encoded(X509Certificate certificate) {
-        try { return certificate.getEncoded(); } catch (Exception err) { return new byte[0]; }
+        try { return certificate.getEncoded(); } catch (Exception err) {
+            Caught.warn(err);
+            return new byte[0];
+        }
     }
 
     private static String endpoint(String local, String address) {
@@ -162,6 +167,7 @@ public final class IdpMetadata {
                     String pem = Xmls.toPem(Xmls.text(first.get(0)));
                     out.add((X509Certificate) CertificateFactory.getInstance("X.509").generateCertificate(new ByteArrayInputStream(pem.getBytes(StandardCharsets.US_ASCII))));
                 } catch (Exception err) {
+                    Caught.error(err);
                     throw new WsFedError("metadata", "a " + use + " certificate in the identity provider's metadata cannot be read", err);
                 }
             }

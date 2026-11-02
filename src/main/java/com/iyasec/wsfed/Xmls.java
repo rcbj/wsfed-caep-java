@@ -64,6 +64,7 @@ public final class Xmls {
         } catch (WsFedError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("xml", what + " is not well-formed XML: " + err.getMessage(), err);
         }
     }

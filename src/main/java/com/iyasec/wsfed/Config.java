@@ -65,6 +65,7 @@ public final class Config {
             } catch (WsFedError err) {
                 throw err;
             } catch (Exception err) {
+                Caught.error(err);
                 throw new WsFedError("config", "the private key or certificate cannot be read: " + err.getMessage(), err);
             }
         } else if (out.wantAssertionsEncrypted) {
@@ -84,6 +85,7 @@ public final class Config {
         } catch (WsFedError err) {
             throw new WsFedError("config", path + " cannot be read as JSON: " + err.getMessage(), err);
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("config", path + " cannot be read as JSON: " + err.getMessage(), err);
         }
         Map<String, Object> merged = new LinkedHashMap<>(parsed);
@@ -110,6 +112,7 @@ public final class Config {
                 throw new IllegalArgumentException("not http(s)");
             }
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("config", what + " must be an absolute http(s) URL, not " + value);
         }
         return (String) value;
@@ -144,6 +147,7 @@ public final class Config {
         try {
             return Files.readString(file);
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("config", what + " is neither a PEM nor a readable file (" + file + ")", err);
         }
     }

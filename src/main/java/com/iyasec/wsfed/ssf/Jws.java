@@ -3,6 +3,7 @@
 
 package com.iyasec.wsfed.ssf;
 
+import com.iyasec.wsfed.Caught;
 import com.iyasec.wsfed.Json;
 import com.iyasec.wsfed.WsFedError;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -101,6 +102,7 @@ public final class Jws {
         } catch (WsFedError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("signature", "the SET is not a compact JWS", err);
         }
     }

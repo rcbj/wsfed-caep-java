@@ -231,6 +231,7 @@ public final class TokenValidator {
         try {
             return OffsetDateTime.parse(value.replace("Z", "+00:00")).toInstant();
         } catch (Exception err) {
+            Caught.error(err);
             invalid(what + " is not a dateTime: " + value);
             return null;
         }

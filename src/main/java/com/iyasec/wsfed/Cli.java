@@ -34,6 +34,7 @@ public final class Cli {
             int code = run(args, System.out::print);
             if (code != 0) System.exit(code);
         } catch (RuntimeException err) {
+            Caught.error(err);
             System.err.println(err.getMessage());
             System.exit(1);
         }
@@ -74,6 +75,7 @@ public final class Cli {
             } catch (RuntimeException err) {
                 throw err;
             } catch (Exception err) {
+                Caught.error(err);
                 throw new WsFedError("config", "the key pair could not be written: " + err.getMessage(), err);
             }
             out.accept("Wrote the private key  " + paths.key + " (mode 600)\n");
@@ -100,6 +102,7 @@ public final class Cli {
             } catch (RuntimeException err) {
                 throw err;
             } catch (Exception err) {
+                Caught.error(err);
                 throw new WsFedError("config", configPath + " cannot be read as JSON: " + err.getMessage(), err);
             }
             return 0;
@@ -152,6 +155,7 @@ public final class Cli {
             } catch (RuntimeException err) {
                 throw err;
             } catch (Exception err) {
+                Caught.error(err);
                 throw new WsFedError("config", configPath + " cannot be read as JSON: " + err.getMessage(), err);
             }
         }

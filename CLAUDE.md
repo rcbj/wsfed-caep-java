@@ -17,6 +17,10 @@ The party accepts SAML 2.0 assertions with bearer confirmation `urn:oasis:names:
 
 Omitted or `true` means on. The resolved configuration leaves `signals` null in that case. `false` is stored as `Boolean.FALSE`, does not start the receiver, and does not require transmitter metadata. The relying party never starts the receiver itself; `SignalsReceiver` is separate. Sign-in does not change when signals are off, because WS-Federation does not send OAuth scopes. A non-boolean raises a config error: `signals must be true or false`. The shipped demo omits the key.
 
+## Errors
+
+`Caught.error` records a caught exception through `java.lang.System.Logger`, including the stack, and the method then throws the `WsFedError` it already threw. The caught exception is the cause. `Caught.warn` is the same record when the method recovers and does not throw: a later signing key, a poll retry, a false verification, sign-out cleanup, or a handler that must still acknowledge the Security Event Token. A `catch (WsFedError)` that only throws that error again is not logged a second time.
+
 ## Tests
 
 ```sh

@@ -3,6 +3,7 @@
 
 package com.iyasec.wsfed.demo;
 
+import com.iyasec.wsfed.Caught;
 import com.iyasec.wsfed.Json;
 import com.iyasec.wsfed.RelyingParty;
 import com.iyasec.wsfed.WsFedLogin;
@@ -105,6 +106,7 @@ public final class Demo {
                             new String[] {"set-cookie", pending("", 0)},
                             new String[] {"set-cookie", "sid=" + sign(sessionId) + "; Path=/; HttpOnly; SameSite=Lax" + secure}), new byte[0]);
                 } catch (Exception err) {
+                    Caught.error(err);
                     return text(400, "text/plain", "Sign-in failed.");
                 }
             }
@@ -137,6 +139,7 @@ public final class Demo {
                     byte[] css = Files.readAllBytes(Path.of("demo", "public", "styles.css"));
                     return new Result(200, headers(new String[] {"content-type", "text/css"}), css);
                 } catch (Exception err) {
+                    Caught.error(err);
                     return text(200, "text/css", "body{font-family:sans-serif}\n");
                 }
             }
@@ -164,6 +167,7 @@ public final class Demo {
                 mac.init(new SecretKeySpec(secret, "HmacSHA256"));
                 return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
             } catch (Exception err) {
+                Caught.error(err);
                 throw new IllegalStateException(err);
             }
         }
@@ -198,6 +202,7 @@ public final class Demo {
             try {
                 if (holder[0] == null) holder[0] = load(configPath, port, published, explicit);
             } catch (Exception err) {
+                Caught.error(err);
                 write(exchange, 503, headers(new String[] {"content-type", "text/plain"}), ("not ready: " + err.getMessage() + "\n").getBytes(StandardCharsets.UTF_8));
                 return;
             }
@@ -233,6 +238,7 @@ public final class Demo {
                 receiver.start();
                 app.receiver = receiver;
             } catch (Exception err) {
+                Caught.error(err);
                 System.out.println("ssf: not started: " + err.getMessage());
             }
         }
@@ -270,6 +276,7 @@ public final class Demo {
             String fragment = uri.getRawFragment() == null ? "" : "#" + uri.getRawFragment();
             return uri.getScheme() + "://" + netloc + path + query + fragment;
         } catch (Exception err) {
+            Caught.error(err);
             return url;
         }
     }

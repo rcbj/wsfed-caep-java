@@ -80,6 +80,7 @@ public final class XmlEncryption {
         } catch (WsFedError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             fail("the content could not be decrypted", err);
         }
         throw new AssertionError("unreachable");
@@ -116,6 +117,7 @@ public final class XmlEncryption {
         } catch (WsFedError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             fail("the content key could not be unwrapped with this relying party's key", err);
         }
         throw new AssertionError("unreachable");

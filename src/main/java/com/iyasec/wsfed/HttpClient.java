@@ -74,8 +74,10 @@ public final class HttpClient {
         } catch (WsFedError err) {
             throw err;
         } catch (java.net.SocketTimeoutException err) {
+            Caught.error(err);
             throw new WsFedError(code, url + " did not answer within " + (TIMEOUT_MS / 1000) + " s", err);
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError(code, url + ": " + err.getMessage(), err);
         }
     }

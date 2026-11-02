@@ -89,6 +89,7 @@ public final class RelyingParty {
             try {
                 xml = Files.readString(Path.of(source));
             } catch (Exception err) {
+                Caught.error(err);
                 throw new WsFedError("metadata", "the identity provider metadata file " + source + " cannot be read", err);
             }
         }

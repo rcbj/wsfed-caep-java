@@ -77,6 +77,7 @@ public final class X509Material {
         } catch (WsFedError err) {
             throw err;
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("config", "the self-signed certificate could not be built: " + err.getMessage(), err);
         }
     }

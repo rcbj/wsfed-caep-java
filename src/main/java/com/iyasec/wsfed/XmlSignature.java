@@ -53,6 +53,7 @@ public final class XmlSignature {
             }
             return out.toByteArray();
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("signature", "canonicalization failed: " + err.getMessage(), err);
         }
     }
@@ -112,6 +113,7 @@ public final class XmlSignature {
         try {
             got = MessageDigest.getInstance(DIGESTS.get(digestAlg)).digest(refC14n);
         } catch (Exception err) {
+            Caught.error(err);
             throw new WsFedError("signature", what + "'s digest could not be computed", err);
         }
         if (!java.util.Arrays.equals(got, b64(Xmls.child(ref, Xmls.DS, "DigestValue")))) {
@@ -127,6 +129,7 @@ public final class XmlSignature {
                 verifier.update(info);
                 if (verifier.verify(signatureBytes)) return new String(refC14n, StandardCharsets.UTF_8);
             } catch (Exception err) {
+                Caught.error(err);
                 reason = err.getMessage();
             }
         }
