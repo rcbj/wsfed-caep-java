@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <!-- The demo: an HTTP app over the library. Never published. Its jar and its runtime
+       dependencies (the library among them, in target/dependency) are what the image runs. -->
+  <parent>
+    <groupId>com.iyasec</groupId>
+    <artifactId>wsfed-caep-build</artifactId>
+    <version>0.1.0</version>
+  </parent>
+  <artifactId>wsfed-caep-demo</artifactId>
+  <name>wsfed-caep demo</name>
+  <dependencies>
+    <dependency>
+      <groupId>com.iyasec</groupId>
+      <artifactId>wsfed-caep</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.10.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.8.1</version>
+      </plugin>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>2.22.2</version>
+        <configuration>
+          <!-- TrustChainTest runs scripts/ and reads demo/wsfed.json from the repository root. -->
+          <workingDirectory>${project.basedir}/..</workingDirectory>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- StubIdp and its key files: test fixtures this module's tests and the demo's share.
+             They are compiled into the test classpaths only, never into a published jar. -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>test-fixtures</id>
+            <phase>generate-test-sources</phase>
+            <goals><goal>add-test-source</goal><goal>add-test-resource</goal></goals>
+            <configuration>
+              <sources><source>${project.basedir}/../library/src/test-fixtures/java</source></sources>
+              <resources><resource><directory>${project.basedir}/../library/src/test-fixtures/resources</directory></resource></resources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.1.0</version>
+        <configuration>
+          <mainClass>com.iyasec.wsfed.demo.Demo</mainClass>
+        </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.6.1</version>
+        <executions>
+          <execution>
+            <id>copy-dependencies</id>
+            <phase>package</phase>
+            <goals><goal>copy-dependencies</goal></goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/dependency</outputDirectory>
+              <includeScope>runtime</includeScope>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
