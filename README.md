@@ -22,8 +22,17 @@ Methods are the TypeScript names: `fromFile`, `login`, `handleReply`, `resolveCo
 `signals` omitted or `true` is on. The resolved configuration leaves `signals` null in that case. `false` is kept as `Boolean.FALSE`, does not start a receiver, and does not require transmitter metadata. Sign-in is unchanged either way: WS-Federation does not send OAuth scopes. Any other value raises a config error whose message is `signals must be true or false`.
 
 ```sh
-mvn -q exec:java -Dexec.mainClass=com.iyasec.wsfed.Cli -Dexec.args="generate-keys --config demo/wsfed.json"
-mvn -q exec:java -Dexec.mainClass=com.iyasec.wsfed.Cli -Dexec.args="metadata --config demo/wsfed.json"
+docker compose build
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/demo:/app/demo" \
+  wsfed-caep-java-demo \
+  java -cp 'wsfed-caep.jar:dependency/*' \
+  com.iyasec.wsfed.Cli generate-keys --config demo/wsfed.json
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/demo:/app/demo" \
+  wsfed-caep-java-demo \
+  java -cp 'wsfed-caep.jar:dependency/*' \
+  com.iyasec.wsfed.Cli metadata --config demo/wsfed.json
 ```
 
 The generated certificate's common name defaults to `wsfed-caep-nodejs relying party` plus the realm, cut at 64 characters.
@@ -37,10 +46,10 @@ A catch that recovers does not throw. It is still logged. A poll is retried, the
 ## Tests
 
 ```sh
-mvn -B test
+docker build --target test .
 ```
 
-The suite includes a stub identity provider. It does not need a live iya-sts. XML signatures use Santuario canonicalization and JDK RSA. The Shared Signals JWS uses Nimbus.
+The suite runs in a container. It includes a stub identity provider. It does not need a live iya-sts. XML signatures use Santuario canonicalization and JDK RSA. The Shared Signals JWS uses Nimbus.
 
 ## Layout
 
@@ -58,5 +67,5 @@ The suite includes a stub identity provider. It does not need a live iya-sts. XM
 Demo JSON uses `file:` paths under `demo/generated/`. Those keys are not in the tree. `"signals"` is omitted, so the receiver is on when a transmitter is configured.
 
 ```sh
-PORT=40123 mvn -q exec:java
+PORT=40123 docker compose up --build
 ```

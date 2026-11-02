@@ -24,14 +24,16 @@ Omitted or `true` means on. The resolved configuration leaves `signals` null in 
 ## Tests
 
 ```sh
-mvn -B test
+docker build --target test .
 ```
+
+The `test` stage runs `mvn -B test` in `maven:3.9.9-eclipse-temurin-17`. GitHub Actions uses that command. Do not run Maven on the host. The demo stage packages with `-DskipTests` in its own Maven image.
 
 JUnit 5 covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, and the demo handler. No live iya-sts. `scripts/configure_iya_sts.py` is the same registration script as the Python tree; its plan is exercised there.
 
 ## Layout
 
-`src/main/java/com/iyasec/wsfed` library (`ssf` is the poll receiver). `src/test/java` JUnit. `com.iyasec.wsfed.demo.Demo` is the JDK HTTP server, started with `mvn exec:java`. `scripts/configure_iya_sts.py` registers the demo with iya-sts; the container `PORT` wins over the shell `PORT`. `Dockerfile` and comment-free `docker-compose.yml` use `network_mode: host`, `ENV PORT=3000`, and a health check of `http://127.0.0.1:${PORT}/healthz`.
+`src/main/java/com/iyasec/wsfed` library (`ssf` is the poll receiver). `src/test/java` JUnit. `com.iyasec.wsfed.demo.Demo` is the JDK HTTP server, started with `docker compose up --build`. `scripts/configure_iya_sts.py` registers the demo with iya-sts; the container `PORT` wins over the shell `PORT`. `Dockerfile` and comment-free `docker-compose.yml` use `network_mode: host`, `ENV PORT=3000`, and a health check of `http://127.0.0.1:${PORT}/healthz`.
 
 ## Demo
 
