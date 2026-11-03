@@ -26,7 +26,7 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 # The demo module copies its runtime dependencies, the library among them, to demo/target/dependency.
 RUN mvn -B -DskipTests package
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 # The demo's jar under the name the image has always run, and beside it every
