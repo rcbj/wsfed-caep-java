@@ -6,7 +6,7 @@
   <parent>
     <groupId>com.iyasec</groupId>
     <artifactId>wsfed-caep-build</artifactId>
-    <version>0.1.1</version>
+    <version>0.1.2</version>
   </parent>
   <artifactId>wsfed-caep-demo</artifactId>
   <name>wsfed-caep demo</name>

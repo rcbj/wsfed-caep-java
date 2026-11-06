@@ -5,7 +5,7 @@
        The demo is the sibling module ../demo, which is never published. -->
   <groupId>com.iyasec</groupId>
   <artifactId>wsfed-caep</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
   <name>wsfed-caep</name>
   <description>Server-side WS-Federation relying party that accepts SAML 2.0 assertions, and a CAEP and RISC receiver.</description>
   <url>https://github.com/rcbj/wsfed-caep-java</url>
