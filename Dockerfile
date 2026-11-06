@@ -31,7 +31,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 # The demo's jar under the name the image has always run, and beside it every
 # runtime dependency, the library jar among them (com.iyasec.wsfed.Cli is there).
-COPY --from=build /src/demo/target/wsfed-caep-demo-0.1.1.jar /app/wsfed-caep.jar
+COPY --from=build /src/demo/target/wsfed-caep-demo-0.1.2.jar /app/wsfed-caep.jar
 COPY --from=build /src/demo/target/dependency /app/dependency
 # The demo, and with it idpCa's file: demo/generated/idp-ca.pem, the iya-sts
 # listener CA trust chain scripts/configure_iya_sts.py saved. The image trusts
