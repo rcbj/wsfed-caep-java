@@ -3,7 +3,7 @@
 
 # `docker build --target test` runs the suite in this image.
 # The demo image below does not run it.
-FROM maven:3.9.9-eclipse-temurin-17 AS test
+FROM maven:3.9-eclipse-temurin-26 AS test
 # TrustChainTest runs the install script's trust-chain code: python3, and the
 # openssl CLI it reads certificate names with.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
@@ -18,7 +18,7 @@ COPY scripts ./scripts
 COPY demo/wsfed.json demo/wsfed.json
 RUN mvn -B test
 
-FROM maven:3.9.9-eclipse-temurin-17 AS build
+FROM maven:3.9-eclipse-temurin-26 AS build
 WORKDIR /src
 COPY pom.xml .
 COPY library library
@@ -26,7 +26,7 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 # The demo module copies its runtime dependencies, the library among them, to demo/target/dependency.
 RUN mvn -B -DskipTests package
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 # The demo's jar under the name the image has always run, and beside it every
