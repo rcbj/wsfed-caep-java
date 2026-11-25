@@ -73,7 +73,48 @@ public final class Config {
         }
         if (config.get("idpCa") instanceof String ca && !ca.isBlank()) out.idpCa = material(ca, base, "idpCa");
         if (config.get("idpEntityId") instanceof String entity && !entity.isBlank()) out.idpEntityId = entity;
+        if (config.get("ssf") instanceof Map<?, ?> ssf) {
+            Map<String, Object> section = new LinkedHashMap<>();
+            ssf.forEach((key, value) -> section.put(String.valueOf(key), value));
+            String cert = ssfText(section, "clientCertificate");
+            String key = ssfText(section, "clientKey");
+            if (cert != null || key != null) {
+                if (cert == null || key == null) {
+                    throw new WsFedError("config", "ssf.clientCertificate and ssf.clientKey go together: give both or neither");
+                }
+                String certPem = material(cert, base, "ssf.clientCertificate");
+                String keyPem = material(key, base, "ssf.clientKey");
+                String problem = Keys.clientIdentityProblem(certPem, keyPem);
+                if (problem != null) {
+                    throw new WsFedError("config", "ssf.clientCertificate and ssf.clientKey are not a TLS client identity: " + problem);
+                }
+                out.ssfClientCertificate = certPem;
+                out.ssfClientKey = keyPem;
+            }
+        }
+        if (config.containsKey("pep") && config.get("pep") != null) {
+            if (!(config.get("pep") instanceof Map<?, ?> raw)) throw new WsFedError("config", "pep must be an object");
+            Map<String, Object> section = new LinkedHashMap<>();
+            raw.forEach((key, value) -> section.put(String.valueOf(key), value));
+            if (section.get("assertionKey") instanceof String key) section.put("assertionKey", assertionKeyPath(key, base));
+            out.pep = section;
+        }
         return out;
+    }
+
+    private static String ssfText(Map<String, Object> ssf, String name) {
+        if (!ssf.containsKey(name) || ssf.get(name) == null) return null;
+        if (!(ssf.get(name) instanceof String text) || text.isBlank()) {
+            throw new WsFedError("config", "ssf." + name + " must be a PEM or a file path");
+        }
+        return text.strip();
+    }
+
+    /** {@code file:} dropped; a relative path is taken from the configuration's directory. The PEP reads the file. */
+    private static String assertionKeyPath(String key, String base) {
+        String path = key.startsWith("file:") ? key.substring(5) : key;
+        if (path.isEmpty() || path.contains("-----BEGIN ") || Path.of(path).isAbsolute()) return path;
+        return Path.of(base).resolve(path).toString();
     }
 
     public static Resolved readFile(String path, Map<String, Object> overrides) {

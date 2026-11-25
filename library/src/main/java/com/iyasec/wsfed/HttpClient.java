@@ -13,7 +13,10 @@ import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.KeyManagerFactory;
@@ -62,6 +65,7 @@ public final class HttpClient {
                 throw new WsFedError(code, url + " is not an http(s) URL");
             }
             refusePlainHttpOffLoopback(uri, code);
+            if ("PATCH".equalsIgnoreCase(method)) return patch(uri, headers, body, tls, code);
             HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
             if (conn instanceof HttpsURLConnection https && tls != null && (tls.ca != null || tls.cert != null)) {
                 https.setSSLSocketFactory(context(tls).getSocketFactory());
@@ -182,12 +186,50 @@ public final class HttpClient {
             KeyStore store = KeyStore.getInstance("PKCS12");
             store.load(null, null);
             char[] password = new char[0];
-            store.setKeyEntry("client", Config.privateKey(tls.key), password, new Certificate[] {Config.certificate(tls.cert)});
+            List<X509Certificate> chain = Keys.certificates(tls.cert);
+            if (chain.isEmpty()) throw new IllegalArgumentException("the certificate holds no CERTIFICATE block");
+            store.setKeyEntry("client", Keys.loadPrivateKey(tls.key), password, chain.toArray(Certificate[]::new));
             keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             keys.init(store, password);
         }
         SSLContext context = SSLContext.getInstance("TLS");
         context.init(keys == null ? null : keys.getKeyManagers(), trust == null ? null : trust.getTrustManagers(), new SecureRandom());
         return context;
+    }
+
+    /**
+     * PATCH is not a method {@link HttpURLConnection} will send. The JDK HTTP
+     * client does, with the same TLS material and without following a redirect.
+     */
+    private static Response patch(URI uri, Map<String, String> headers, String body, Tls tls, String code) {
+        try {
+            java.net.http.HttpClient.Builder builder = java.net.http.HttpClient.newBuilder()
+                    .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+                    .connectTimeout(Duration.ofMillis(TIMEOUT_MS));
+            if ("https".equalsIgnoreCase(uri.getScheme()) && tls != null && (tls.ca != null || tls.cert != null)) {
+                builder.sslContext(context(tls));
+            }
+            java.net.http.HttpRequest.Builder request = java.net.http.HttpRequest.newBuilder(uri)
+                    .timeout(Duration.ofMillis(TIMEOUT_MS));
+            if (headers != null) {
+                for (Map.Entry<String, String> entry : headers.entrySet()) request.header(entry.getKey(), entry.getValue());
+            }
+            request.method("PATCH", body == null
+                    ? java.net.http.HttpRequest.BodyPublishers.noBody()
+                    : java.net.http.HttpRequest.BodyPublishers.ofString(body));
+            java.net.http.HttpResponse<byte[]> response = builder.build().send(request.build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            byte[] raw = response.body() == null ? new byte[0] : response.body();
+            if (raw.length > MAX_BYTES) throw new WsFedError(code, uri + " answered more than " + MAX_BYTES + " bytes");
+            String type = response.headers().firstValue("content-type").orElse("");
+            return new Response(response.statusCode(), type, new String(raw, StandardCharsets.UTF_8));
+        } catch (WsFedError err) {
+            throw err;
+        } catch (java.net.http.HttpTimeoutException err) {
+            Caught.error(err);
+            throw new WsFedError(code, uri + " did not answer within " + (TIMEOUT_MS / 1000) + " s", err);
+        } catch (Exception err) {
+            Caught.error(err);
+            throw new WsFedError(code, uri + ": " + err.getMessage(), err);
+        }
     }
 }

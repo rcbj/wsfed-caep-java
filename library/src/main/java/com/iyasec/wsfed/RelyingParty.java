@@ -16,7 +16,15 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.time.Instant;
 import java.util.Set;
+
+import com.iyasec.pep.Access;
+import com.iyasec.pep.Decision;
+import com.iyasec.pep.Pep;
+import com.iyasec.pep.PepException;
+import com.iyasec.wsfed.pep.EmbeddedPep;
+import com.iyasec.wsfed.ssf.SignalsReceiver;
 
 /** WS-Federation 1.2 passive requestor. It does not start the Shared Signals receiver. */
 public final class RelyingParty {
@@ -27,6 +35,7 @@ public final class RelyingParty {
     public final Resolved config;
     private IdpMetadata idp;
     private final MemoryReplayCache replayCache;
+    private Pep pep;
 
     public RelyingParty(Resolved config, IdpMetadata idp, MemoryReplayCache replayCache) {
         this.config = config;
@@ -53,6 +62,7 @@ public final class RelyingParty {
     public static RelyingParty create(Map<String, Object> config) {
         RelyingParty party = new RelyingParty(resolveConfig(config), null, null);
         party.refreshMetadata();
+        party.startPep();
         return party;
     }
 
@@ -63,7 +73,57 @@ public final class RelyingParty {
     public static RelyingParty fromFile(String path, Map<String, Object> overrides) {
         RelyingParty party = new RelyingParty(readConfigFile(path, overrides), null, null);
         party.refreshMetadata();
+        party.startPep();
         return party;
+    }
+
+    /** The embedded PEP, when the configuration has a {@code pep} section. */
+    public Pep pep() {
+        return pep;
+    }
+
+    /**
+     * Decides one access for a validated sign-in. With no {@code pep} section
+     * the answer is Unavailable: nothing here permits by default. Never throws.
+     */
+    public Decision decide(WsFedLogin login, Access access) {
+        try {
+            if (pep == null) return EmbeddedPep.unavailable("no pep section is configured");
+            return pep.decide(EmbeddedPep.subjectOf(login), access);
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            return EmbeddedPep.unavailable(err.getMessage() == null ? "the decision failed" : err.getMessage());
+        }
+    }
+
+    /**
+     * {@link #decide} for the sign-in kept under {@code localId} and tracked
+     * with {@code receiver}. A session the receiver no longer tracks, or one
+     * whose SessionNotOnOrAfter is now or past, is denied without asking.
+     * A null SessionNotOnOrAfter is not denied for that reason. Never throws.
+     */
+    public Decision decideSession(SignalsReceiver receiver, String localId, WsFedLogin login, Access access) {
+        try {
+            if (login.sessionNotOnOrAfter != null && !login.sessionNotOnOrAfter.isAfter(Instant.now())) {
+                return EmbeddedPep.deny("the identity provider's session has ended");
+            }
+            if (receiver == null || !receiver.isTracked(localId)) return EmbeddedPep.deny("no signed-in session");
+            return decide(login, access);
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            return EmbeddedPep.unavailable(err.getMessage() == null ? "the decision failed" : err.getMessage());
+        }
+    }
+
+    private void startPep() {
+        String issuer = idp == null || idp.entityId == null ? "" : idp.entityId;
+        pep = EmbeddedPep.build(config, issuer);
+        if (pep == null) return;
+        try {
+            pep.start();
+        } catch (PepException err) {
+            throw new WsFedError("config", err.detail(), err);
+        }
     }
 
     public IdpMetadata getIdp() {

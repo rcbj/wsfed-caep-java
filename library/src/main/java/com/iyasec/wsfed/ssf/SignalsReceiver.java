@@ -3,11 +3,15 @@
 
 package com.iyasec.wsfed.ssf;
 
+import com.iyasec.pep.EventStream;
+import com.iyasec.pep.Pep;
+import com.iyasec.pep.key.SigningKey;
 import com.iyasec.wsfed.Caught;
 import com.iyasec.wsfed.HttpClient;
 import com.iyasec.wsfed.Json;
 import com.iyasec.wsfed.WsFedError;
 import com.iyasec.wsfed.WsFedLogin;
+import com.iyasec.wsfed.pep.EmbeddedPep;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,6 +56,19 @@ public final class SignalsReceiver {
         public int pollIntervalMs = 5000;
         public int maxEvents = 50;
         public Log log;
+        /** Add Subject and Remove Subject. Default true. The demo reads {@code ssf.addSubjects}. */
+        public boolean addSubjects = true;
+        /** The relying party's embedded PEP. Null when there is none. */
+        public Pep pep;
+    }
+
+    /** What Add Subject and Remove Subject have done since the receiver was made. */
+    public static final class SubjectsHealth {
+        public long added;
+        public long removed;
+        public long refused;
+        public long failed;
+        public String lastError = "";
     }
 
     private final String transmitter;
@@ -66,6 +83,13 @@ public final class SignalsReceiver {
     private final int pollIntervalMs;
     private final int maxEvents;
     private final Log log;
+    private final boolean addSubjects;
+    /** The PEP whose policy events this stream carries. Null unless it wants them. */
+    private final Pep pep;
+    /** What the stream carries ({@code requested} or {@code excluded}), once {@code start} knows. */
+    private volatile EventStream pepStream;
+    private final SubjectsHealth health = new SubjectsHealth();
+    private final Object healthLock = new Object();
     private Map<String, Object> config;
     private Map<String, Object> stream;
     private List<Map<String, Object>> keys = List.of();
@@ -92,7 +116,29 @@ public final class SignalsReceiver {
         this.onEnd = onEnd;
         this.tls = opts.tls;
         this.headers = opts.headers;
-        this.eventsRequested = opts.eventsRequested == null ? List.copyOf(Events.DEFAULT_EVENTS_REQUESTED) : List.copyOf(opts.eventsRequested);
+        List<String> requested = opts.eventsRequested == null ? new ArrayList<>(Events.DEFAULT_EVENTS_REQUESTED) : new ArrayList<>(opts.eventsRequested);
+        Pep given = opts.pep;
+        Pep kept = null;
+        if (given != null) {
+            String client = opts.tls == null || opts.tls.key == null ? null : SigningKey.pemThumbprint(opts.tls.key);
+            String pepKey = given.keyThumbprint();
+            if (client != null && !client.isEmpty() && pepKey != null && !pepKey.isEmpty() && client.equals(pepKey)) {
+                throw new WsFedError("config", "the receiver's TLS client key is pep.assertionKey; the PEP needs a key of its own");
+            }
+            if (EmbeddedPep.wantsEvents(given)) {
+                final Pep policyPep = given;
+                kept = policyPep;
+                if (!requested.contains(Pep.POLICIES_CHANGED_EVENT)) requested.add(Pep.POLICIES_CHANGED_EVENT);
+                handlers.computeIfAbsent(Pep.POLICIES_CHANGED_EVENT, key -> new ArrayList<>()).add(event -> {
+                    try {
+                        policyPep.onPolicyEvent(EmbeddedPep.toJson(event.payload));
+                    } catch (RuntimeException err) {
+                        Caught.warn(err);
+                    }
+                });
+            }
+        }
+        this.eventsRequested = requested;
         this.endOn = opts.endOn == null ? List.copyOf(Events.DEFAULT_ENDING_EVENTS) : List.copyOf(opts.endOn);
         this.index = opts.sessionIndex == null ? new SessionIndex() : opts.sessionIndex;
         this.subjectAttribute = opts.subjectAttribute;
@@ -100,18 +146,51 @@ public final class SignalsReceiver {
         this.pollIntervalMs = opts.pollIntervalMs;
         this.maxEvents = opts.maxEvents;
         this.log = opts.log == null ? new PrintLog() : opts.log;
+        this.addSubjects = opts.addSubjects;
+        this.pep = kept;
     }
 
     public Map<String, Object> stream() {
         return stream;
     }
 
-    public void track(String localId, WsFedLogin login) {
-        index.add(SessionIndex.trackedFrom(localId, login, subjectAttribute, null));
+    /** The event types this receiver asks its stream for. */
+    public List<String> eventsRequested() {
+        return List.copyOf(eventsRequested);
     }
 
+    /** Tracked, not untracked, not past its expiry, and not ended by an event. */
+    public boolean isTracked(String localId) {
+        return index.contains(localId);
+    }
+
+    /** What Add Subject and Remove Subject have done. */
+    public SubjectsHealth subjectsHealth() {
+        synchronized (healthLock) {
+            SubjectsHealth copy = new SubjectsHealth();
+            copy.added = health.added;
+            copy.removed = health.removed;
+            copy.refused = health.refused;
+            copy.failed = health.failed;
+            copy.lastError = health.lastError;
+            return copy;
+        }
+    }
+
+    /**
+     * Tracks a local session and, when {@code addSubjects} is on and the
+     * receiver is running, asks the transmitter to send events about that
+     * person. The call is inline and never fails the sign-in.
+     */
+    public void track(String localId, WsFedLogin login) {
+        SessionIndex.Session session = SessionIndex.trackedFrom(localId, login, subjectAttribute, null);
+        index.add(session);
+        subjectCall(true, session);
+    }
+
+    /** Stops tracking a local session and removes the subject when it was the last one. */
     public void untrack(String localId) {
-        index.remove(localId);
+        forget(localId);
     }
 
     public SignalsReceiver on(String eventType, Consumer<SignalEvent> handler) {
@@ -129,10 +208,24 @@ public final class SignalsReceiver {
         if (!(endpoint instanceof String) || ((String) endpoint).isEmpty()) {
             throw new WsFedError("ssf", "the stream has no poll endpoint_url");
         }
+        if (pep != null) {
+            boolean carried = carries(stream, "events_delivered");
+            if (!(stream.get("events_delivered") instanceof List<?>)) carried = carries(stream, "events_requested");
+            if (!(stream.get("events_delivered") instanceof List<?>) && !(stream.get("events_requested") instanceof List<?>)) carried = true;
+            EventStream state = carried ? EventStream.REQUESTED : EventStream.EXCLUDED;
+            pep.setEventStream(state);
+            pepStream = state;
+        }
         running = true;
         Object delivered = stream.get("events_delivered");
         int count = delivered instanceof List<?> list ? list.size() : 0;
         log.info("ssf: polling stream " + stream.get("stream_id") + " at " + endpoint + ", delivering " + count + " event type(s)");
+        if (addSubjects && pep != null) {
+            Map<String, Object> subject = new LinkedHashMap<>();
+            subject.put("format", "opaque");
+            subject.put("id", pep.config().application);
+            sendSubject(true, subject);
+        }
         thread = new Thread(this::loop, "ssf-poll");
         thread.setDaemon(true);
         thread.start();
@@ -140,6 +233,7 @@ public final class SignalsReceiver {
 
     public void stop() {
         running = false;
+        reportPepStream(EventStream.DOWN);
         Thread current = thread;
         if (current != null && current != Thread.currentThread()) {
             current.interrupt();
@@ -178,9 +272,11 @@ public final class SignalsReceiver {
         }
         try {
             flight.result = pollNow();
+            reportPepStream(pepStream);
             return flight.result;
         } catch (RuntimeException err) {
             Caught.error(err);
+            reportPepStream(EventStream.DOWN);
             flight.error = err;
             throw err;
         } finally {
@@ -313,7 +409,7 @@ public final class SignalsReceiver {
                     event.ended = false;
                 }
                 if (event.ended) {
-                    for (String localId : sessions) index.remove(localId);
+                    for (String localId : sessions) forget(localId);
                 }
             }
             List<Consumer<SignalEvent>> both = new ArrayList<>();
@@ -385,7 +481,9 @@ public final class SignalsReceiver {
                 if (!(item instanceof Map<?, ?> raw)) continue;
                 Map<String, Object> one = Json.object(item);
                 Object delivery = one.get("delivery");
-                if (delivery instanceof Map<?, ?> map && POLL_METHOD.equals(map.get("method")) && one.get("stream_id") != null) return one;
+                if (delivery instanceof Map<?, ?> map && POLL_METHOD.equals(map.get("method")) && one.get("stream_id") != null) {
+                    return withRequestedEvents(one, endpoint);
+                }
             }
         } else if (listed.status != 404) {
             throw new WsFedError("ssf", "listing the streams at " + endpoint + " answered " + listed.status + ": " + clip(Json.stringify(listed.json)));
@@ -400,6 +498,41 @@ public final class SignalsReceiver {
             throw new WsFedError("ssf", "creating a stream at " + endpoint + " answered " + created.status + ": " + clip(Json.stringify(created.json)));
         }
         return made;
+    }
+
+    /**
+     * A stream found rather than created can predate an event type this
+     * receiver asks for now. PATCH merges the missing types in. A transmitter
+     * that refuses leaves the stream as it was; the receiver still starts.
+     */
+    private Map<String, Object> withRequestedEvents(Map<String, Object> found, String endpoint) {
+        List<String> requested = eventNames(found.get("events_requested"));
+        if (requested == null) requested = eventNames(found.get("events_delivered"));
+        if (requested == null) return found;
+        List<String> missing = new ArrayList<>();
+        for (String event : eventsRequested) if (!requested.contains(event)) missing.add(event);
+        if (missing.isEmpty()) return found;
+        String streamId = String.valueOf(found.get("stream_id"));
+        List<String> merged = new ArrayList<>(requested);
+        merged.addAll(missing);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("stream_id", streamId);
+        body.put("events_requested", merged);
+        try {
+            Answer updated = call("PATCH", endpoint, body);
+            if (updated.status == 200 && updated.json instanceof Map<?, ?> raw) {
+                Map<String, Object> next = Json.object(raw);
+                if (streamId.equals(String.valueOf(next.get("stream_id")))) {
+                    if (!next.containsKey("delivery") && found.get("delivery") != null) next.put("delivery", found.get("delivery"));
+                    return next;
+                }
+            }
+            log.error("ssf: adding " + String.join(", ", missing) + " to stream " + streamId + " answered " + updated.status + ": " + clip(Json.stringify(updated.json)));
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            log.error("ssf: adding " + String.join(", ", missing) + " to stream " + streamId + " failed: " + err.getMessage());
+        }
+        return found;
     }
 
     private Answer call(String method, String url, Object body) {
@@ -421,6 +554,97 @@ public final class SignalsReceiver {
             }
         }
         return new Answer(answer.status, parsed);
+    }
+
+    private void forget(String localId) {
+        SessionIndex.Session session = index.take(localId);
+        if (session == null) return;
+        List<String> others;
+        if (session.person != null && !session.person.isEmpty()) others = index.byPerson(session.person);
+        else if (session.email != null && !session.email.isEmpty()) others = index.byEmail(session.email);
+        else others = List.of();
+        if (others.isEmpty()) subjectCall(false, session);
+    }
+
+    /** Add Subject or Remove Subject for a tracked person. Never retried, never an error to the caller. */
+    private void subjectCall(boolean add, SessionIndex.Session session) {
+        if (!addSubjects || !running) return;
+        String issuer = config == null || config.get("issuer") == null ? "" : String.valueOf(config.get("issuer"));
+        Map<String, Object> subject = subjectOfSession(session, issuer);
+        if (subject == null) return;
+        sendSubject(add, subject);
+    }
+
+    private static Map<String, Object> subjectOfSession(SessionIndex.Session session, String issuer) {
+        if (session.person != null && !session.person.isEmpty() && issuer != null && !issuer.isEmpty()) {
+            Map<String, Object> subject = new LinkedHashMap<>();
+            subject.put("format", "iss_sub");
+            subject.put("iss", issuer);
+            subject.put("sub", session.person);
+            return subject;
+        }
+        if (session.email != null && !session.email.isEmpty()) {
+            Map<String, Object> subject = new LinkedHashMap<>();
+            subject.put("format", "email");
+            subject.put("email", session.email);
+            return subject;
+        }
+        return null;
+    }
+
+    /** Add Subject or Remove Subject for {@code subject} on this stream, once. Counted, never thrown. */
+    private void sendSubject(boolean add, Map<String, Object> subject) {
+        String name = add ? "add_subject_endpoint" : "remove_subject_endpoint";
+        String endpoint = config == null || config.get(name) == null ? "" : String.valueOf(config.get(name));
+        String streamId = stream == null || stream.get("stream_id") == null ? "" : String.valueOf(stream.get("stream_id"));
+        if (endpoint.isEmpty() || "null".equals(endpoint) || streamId.isEmpty() || "null".equals(streamId)) return;
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("stream_id", streamId);
+        body.put("subject", subject);
+        if (add) body.put("verified", Boolean.TRUE);
+        String what = add ? "adding" : "removing";
+        Object format = subject.get("format");
+        try {
+            Answer outcome = call("POST", endpoint, body);
+            synchronized (healthLock) {
+                if (outcome.status >= 200 && outcome.status < 300) {
+                    if (add) health.added++;
+                    else health.removed++;
+                    return;
+                }
+                String line = "ssf: " + what + " a subject (" + format + ") on stream " + streamId + " answered " + outcome.status + ": " + clip(Json.stringify(outcome.json));
+                if (outcome.status >= 400 && outcome.status < 500) health.refused++;
+                else health.failed++;
+                health.lastError = line;
+                if (outcome.status == 403) log.warn(line);
+                else log.error(line);
+            }
+        } catch (RuntimeException err) {
+            Caught.error(err);
+            String line = "ssf: " + what + " a subject (" + format + ") on stream " + streamId + " failed: " + err.getMessage();
+            synchronized (healthLock) {
+                health.failed++;
+                health.lastError = line;
+            }
+            log.error(line);
+        }
+    }
+
+    private void reportPepStream(EventStream state) {
+        if (pep != null && state != null) pep.setEventStream(state);
+    }
+
+    private static boolean carries(Map<String, Object> stream, String name) {
+        if (!(stream.get(name) instanceof List<?> list)) return false;
+        for (Object item : list) if (Pep.POLICIES_CHANGED_EVENT.equals(String.valueOf(item))) return true;
+        return false;
+    }
+
+    private static List<String> eventNames(Object value) {
+        if (!(value instanceof List<?> list)) return null;
+        List<String> out = new ArrayList<>();
+        for (Object item : list) if (item != null) out.add(String.valueOf(item));
+        return out;
     }
 
     private static List<String> strings(Object value) {

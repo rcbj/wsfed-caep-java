@@ -56,7 +56,29 @@ class HttpDemoTest {
 
     @AfterEach
     void stop() {
+        if (app != null) app.stop();
         if (server != null) server.stop(0);
+    }
+
+    @Test
+    void protectedPagesNeedASignInAndFailClosedWithoutAPep() throws Exception {
+        HttpURLConnection signedOut = open("GET", "/attribute-protected", null, null);
+        assertEquals(401, signedOut.getResponseCode());
+        assertTrue(errorBody(signedOut).contains("<h1>Sign in</h1>"));
+        assertEquals(401, open("POST", "/orders/42", "", null).getResponseCode());
+
+        HttpURLConnection login = open("GET", "/login", null, null);
+        Map<String, String> params = query(URI.create(login.getHeaderField("Location")).getRawQuery());
+        String pending = cookie(login, "wsfed_pending");
+        String form = "wa=wsignin1.0&wresult=" + URLEncoder.encode(StubIdp.wresult(), StandardCharsets.UTF_8)
+                + "&wctx=" + URLEncoder.encode(params.get("wctx"), StandardCharsets.UTF_8);
+        String sid = cookie(open("POST", "/wsfed", form, "wsfed_pending=" + pending), "sid");
+        HttpURLConnection denied = open("GET", "/orders/42", null, "sid=" + sid);
+        assertEquals(403, denied.getResponseCode());
+        String page = errorBody(denied);
+        assertTrue(page.contains("<h1>No decision</h1>"));
+        assertTrue(page.contains("could not decide"));
+        assertEquals(403, open("POST", "/orders/42", "", "sid=" + sid).getResponseCode());
     }
 
     @Test
@@ -155,6 +177,12 @@ class HttpDemoTest {
     private static String body(HttpURLConnection conn) throws Exception {
         assertEquals(200, conn.getResponseCode());
         return new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    private static String errorBody(HttpURLConnection conn) throws Exception {
+        var stream = conn.getErrorStream();
+        if (stream == null) return "";
+        return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
     }
 
     private HttpURLConnection open(String method, String path, String body, String cookie) throws Exception {
