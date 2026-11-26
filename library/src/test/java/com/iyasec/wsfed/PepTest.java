@@ -15,16 +15,28 @@ import com.iyasec.pep.Mode;
 import com.iyasec.pep.Pep;
 import com.iyasec.wsfed.pep.EmbeddedPep;
 import com.iyasec.wsfed.ssf.SignalsReceiver;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** The embedded PEP's subject, and the decisions that do not ask it. */
+/** The embedded PEP's subject, and the decisions the relying party gives. */
 class PepTest {
     @Test
     void subjectIdIsTheNameClaimElseTheNameId() {
@@ -193,6 +205,51 @@ class PepTest {
         }
     }
 
+    @Test
+    void localModeFailsClosedThenDecidesInProcess(@TempDir Path dir) throws Exception {
+        OrdersPdp pdp = null;
+        RelyingParty party = null;
+        try {
+            pdp = OrdersPdp.open();
+            Map<String, Object> section = new LinkedHashMap<>();
+            section.put("name", "pep-demo");
+            section.put("mode", "local");
+            section.put("signals", false);
+            section.put("pollIntervalMs", 1000);
+            section.put("heartbeatIntervalMs", 60000);
+            section.put("assertionKey", ecPkcs8(dir.resolve("pep.pem")));
+            section.put("pdpUrl", pdp.url);
+            Map<String, Object> config = base();
+            config.put("signals", false);
+            config.put("pep", section);
+            party = RelyingParty.create(config);
+            assertEquals(Decision.Kind.UNAVAILABLE, party.decide(login(), Access.of("read", "order", "42")).kind());
+            pdp.policiesUp.set(true);
+            long deadline = System.nanoTime() + 8_000_000_000L;
+            while (System.nanoTime() < deadline && !party.pep().status().holdsPolicy) {
+                Thread.sleep(100);
+            }
+            assertTrue(party.pep().status().holdsPolicy, party.pep().status().lastError);
+            assertTrue(party.decide(login(), Access.of("read", "order", "42")).isPermit());
+            assertEquals(Decision.Kind.DENY, party.decide(login(), Access.of("write", "order", "42")).kind());
+            assertEquals(0, pdp.evaluations.get());
+            assertTrue(pdp.policies.get() > 0);
+        } finally {
+            if (party != null && party.pep() != null) party.pep().stop();
+            if (pdp != null) pdp.close();
+        }
+    }
+
+    /** An EC P-256 key in PKCS#8 PEM, at an absolute path, distinct from the relying party's key. */
+    private static String ecPkcs8(Path path) throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp256r1"));
+        var pair = generator.generateKeyPair();
+        String encoded = Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(pair.getPrivate().getEncoded());
+        Files.writeString(path, "-----BEGIN PRIVATE KEY-----\n" + encoded + "\n-----END PRIVATE KEY-----\n");
+        return path.toAbsolutePath().toString();
+    }
+
     private static WsFedLogin login() {
         WsFedLogin login = new WsFedLogin();
         login.nameId = "alice";
@@ -209,5 +266,132 @@ class PepTest {
         config.put("certificate", StubIdp.RP_CERT);
         config.put("idpMetadata", StubIdp.idpMetadata());
         return config;
+    }
+
+    /**
+     * A loopback PDP. The policy pull is 503 until {@link #policiesUp}, then
+     * one root policy that permits {@code read} and nothing else.
+     */
+    private static final class OrdersPdp implements AutoCloseable {
+        private static final String READ_ONLY = "<Policy xmlns=\"urn:oasis:names:tc:xacml:3.0:core:schema:wd-17\" PolicyId=\"orders\" Version=\"1.0\" RuleCombiningAlgId=\"urn:oasis:names:tc:xacml:3.0:rule-combining-algorithm:deny-unless-permit\"><Target/><Rule RuleId=\"read\" Effect=\"Permit\"><Target><AnyOf><AllOf><Match MatchId=\"urn:oasis:names:tc:xacml:1.0:function:string-equal\"><AttributeValue DataType=\"http://www.w3.org/2001/XMLSchema#string\">read</AttributeValue><AttributeDesignator Category=\"urn:oasis:names:tc:xacml:3.0:attribute-category:action\" AttributeId=\"urn:oasis:names:tc:xacml:1.0:action:action-id\" DataType=\"http://www.w3.org/2001/XMLSchema#string\" MustBePresent=\"false\"/></Match></AllOf></AnyOf></Target></Rule></Policy>";
+
+        final String url;
+        final AtomicBoolean policiesUp = new AtomicBoolean();
+        final AtomicInteger policies = new AtomicInteger();
+        final AtomicInteger evaluations = new AtomicInteger();
+        private final HttpServer server;
+        private final ExecutorService executor;
+
+        private OrdersPdp(HttpServer server, ExecutorService executor) {
+            this.server = server;
+            this.executor = executor;
+            this.url = "http://127.0.0.1:" + server.getAddress().getPort();
+        }
+
+        static OrdersPdp open() throws IOException {
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            ExecutorService executor = Executors.newCachedThreadPool(runnable -> {
+                Thread thread = new Thread(runnable, "orders-pdp");
+                thread.setDaemon(true);
+                return thread;
+            });
+            server.setExecutor(executor);
+            OrdersPdp pdp = new OrdersPdp(server, executor);
+            server.createContext("/", pdp::handle);
+            server.start();
+            return pdp;
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+            executor.shutdownNow();
+        }
+
+        private void handle(HttpExchange exchange) {
+            try {
+                exchange.getRequestBody().readAllBytes();
+                String method = exchange.getRequestMethod();
+                String path = exchange.getRequestURI().getPath();
+                if (path == null) path = "";
+                Reply reply = answer(method, path, exchange.getRequestHeaders().getFirst("Authorization"));
+                byte[] out = reply.body.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("content-type", "application/json");
+                exchange.sendResponseHeaders(reply.status, out.length);
+                exchange.getResponseBody().write(out);
+            } catch (IOException err) {
+                try {
+                    exchange.sendResponseHeaders(500, -1);
+                } catch (IOException ignored) {
+                    // The exchange is already gone.
+                }
+            } finally {
+                exchange.close();
+            }
+        }
+
+        private Reply answer(String method, String path, String authorization) {
+            if (!"/oauth2/token".equals(path) && (authorization == null || !authorization.startsWith("DPoP "))) {
+                return new Reply(401, Json.stringify(Map.of("error", "invalid_token")));
+            }
+            if ("POST".equals(method) && "/oauth2/token".equals(path)) {
+                return new Reply(200, Json.stringify(Map.of("access_token", "pep-token", "token_type", "DPoP", "expires_in", 300)));
+            }
+            if ("POST".equals(method) && "/xacml/pep/register".equals(path)) {
+                return new Reply(201, Json.stringify(Map.of("registered", true)));
+            }
+            if ("POST".equals(method) && "/xacml/pep/heartbeat".equals(path)) {
+                return new Reply(200, Json.stringify(Map.of("acknowledged", true, "current", true)));
+            }
+            if ("GET".equals(method) && "/xacml/pep/authzen-catalogue".equals(path)) {
+                return new Reply(200, Json.stringify(Map.of(
+                        "syncToken", "c1",
+                        "rows", List.of(Map.of("object", "subject", "property", "acr", "attributeId", "urn:example:acr")),
+                        "settings", Map.of("obligationsProfile", false))));
+            }
+            if ("GET".equals(method) && "/xacml/pep/policies".equals(path)) {
+                policies.incrementAndGet();
+                if (!policiesUp.get()) {
+                    Map<String, Object> down = new LinkedHashMap<>();
+                    down.put("error", "server_error");
+                    down.put("error_description", "not now");
+                    return new Reply(503, Json.stringify(down));
+                }
+                Map<String, Object> policy = new LinkedHashMap<>();
+                policy.put("name", "orders");
+                policy.put("policyId", "orders");
+                policy.put("kind", "Policy");
+                policy.put("version", "1.0");
+                policy.put("isRoot", Boolean.TRUE);
+                policy.put("description", "");
+                policy.put("combiningAlgId", "urn:oasis:names:tc:xacml:3.0:rule-combining-algorithm:deny-unless-permit");
+                policy.put("document", READ_ONLY);
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("syncToken", "p1");
+                body.put("root", "orders");
+                body.put("policies", List.of(policy));
+                body.put("withheld", List.of());
+                body.put("note", "");
+                return new Reply(200, Json.stringify(body));
+            }
+            if ("POST".equals(method) && "/admin-api/pep-audit".equals(path)) {
+                return new Reply(200, Json.stringify(Map.of("acknowledged", 0)));
+            }
+            if ("POST".equals(method) && "/access/v1/evaluation".equals(path)) {
+                evaluations.incrementAndGet();
+                return new Reply(200, Json.stringify(Map.of("decision", true)));
+            }
+            return new Reply(404, Json.stringify(Map.of("error", "not_found")));
+        }
+    }
+
+    private static final class Reply {
+        final int status;
+        final String body;
+
+        Reply(int status, String body) {
+            this.status = status;
+            this.body = body;
+        }
     }
 }
