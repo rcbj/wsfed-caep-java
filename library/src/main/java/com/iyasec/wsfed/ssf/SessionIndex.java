@@ -59,6 +59,16 @@ public final class SessionIndex {
         sessions.remove(localId);
     }
 
+    /** Removes the session and returns it, or null when it was not tracked. */
+    public Session take(String localId) {
+        return sessions.remove(localId);
+    }
+
+    /** Tracked, and not past its expiry. An expired session is dropped. */
+    public boolean contains(String localId) {
+        return !find(session -> localId.equals(session.localId)).isEmpty();
+    }
+
     public List<String> byPerson(String person) {
         return find(session -> person.equals(session.person));
     }

@@ -5,8 +5,9 @@
 # The demo image below does not run it.
 FROM maven:3.9-eclipse-temurin-26 AS test
 # TrustChainTest runs the install script's trust-chain code: python3, and the
-# openssl CLI it reads certificate names with.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl && rm -rf /var/lib/apt/lists/*
+# openssl CLI it reads certificate names with. git fetches iya-pep, which is
+# not on Maven Central yet.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # Both modules: library/ (the published library) and demo/ (the demo, HttpDemoTest,
 # and TrustChainTest, which runs scripts/ against demo/wsfed.json).
@@ -16,14 +17,29 @@ COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
 COPY scripts ./scripts
 COPY demo/wsfed.json demo/wsfed.json
+# iya-pep is installed from commit d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 before this library's tests.
+RUN git init /tmp/iya-pep-java \
+ && git -C /tmp/iya-pep-java remote add origin https://github.com/rcbj/iya-pep-java.git \
+ && git -C /tmp/iya-pep-java fetch --depth 1 origin d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 \
+ && git -C /tmp/iya-pep-java checkout --detach FETCH_HEAD \
+ && mvn -B -DskipTests -f /tmp/iya-pep-java/pom.xml install \
+ && rm -rf /tmp/iya-pep-java
 RUN mvn -B test
 
 FROM maven:3.9-eclipse-temurin-26 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pom.xml .
 COPY library library
 COPY demo/pom.xml demo/pom.xml
 COPY demo/src demo/src
+# The same install as the test stage: the demo package resolves com.iyasec:iya-pep.
+RUN git init /tmp/iya-pep-java \
+ && git -C /tmp/iya-pep-java remote add origin https://github.com/rcbj/iya-pep-java.git \
+ && git -C /tmp/iya-pep-java fetch --depth 1 origin d2bbf5ee73a93ec3b2aeb01219fc093fbb41c645 \
+ && git -C /tmp/iya-pep-java checkout --detach FETCH_HEAD \
+ && mvn -B -DskipTests -f /tmp/iya-pep-java/pom.xml install \
+ && rm -rf /tmp/iya-pep-java
 # The demo module copies its runtime dependencies, the library among them, to demo/target/dependency.
 RUN mvn -B -DskipTests package
 FROM eclipse-temurin:25-jre

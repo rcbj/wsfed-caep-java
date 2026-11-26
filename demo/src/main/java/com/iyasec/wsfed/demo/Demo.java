@@ -3,11 +3,15 @@
 
 package com.iyasec.wsfed.demo;
 
+import com.iyasec.pep.Access;
+import com.iyasec.pep.Decision;
 import com.iyasec.wsfed.Caught;
 import com.iyasec.wsfed.HttpClient;
 import com.iyasec.wsfed.Json;
 import com.iyasec.wsfed.RelyingParty;
+import com.iyasec.wsfed.WsFedError;
 import com.iyasec.wsfed.WsFedLogin;
+import com.iyasec.wsfed.pep.EmbeddedPep;
 import com.iyasec.wsfed.ssf.Events;
 import com.iyasec.wsfed.ssf.SignalsReceiver;
 import com.sun.net.httpserver.HttpExchange;
@@ -132,15 +136,22 @@ public final class Demo {
             if ("/FederationMetadata/2007-06/FederationMetadata.xml".equals(path) && "GET".equals(method)) {
                 return text(200, "application/samlmetadata+xml", rp.metadata());
             }
+            if ("/attribute-protected".equals(path)) return enforce(sid, Access.of("read", "attribute-protected", "attr1"));
+            if (path.startsWith("/orders/")) {
+                String id = path.substring("/orders/".length());
+                if (!id.isEmpty() && !id.contains("/")) {
+                    String action = "GET".equals(method) ? "read" : "write";
+                    return enforce(sid, Access.of(action, "order", id));
+                }
+            }
+            if ("/pep-status".equals(path) && "GET".equals(method)) return pepStatus();
             if ("/".equals(path) && "GET".equals(method)) {
                 WsFedLogin who = sid == null ? null : sessions.get(sid);
                 String page = who == null
                         ? "<p><a href=\"/login\">Sign in with WS-Federation</a></p>"
                         : "<p>Signed in as <strong>" + esc(who.nameId) + "</strong> by " + esc(who.issuer) + ".</p>"
                         + "<form method=\"post\" action=\"/logout\"><button>Sign out</button></form>";
-                String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>WS-Federation</title>"
-                        + "<link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>" + page + "</main></body></html>";
-                return text(200, "text/html; charset=utf-8", html);
+                return text(200, "text/html; charset=utf-8", shell("<h1>WS-Federation</h1>" + page));
             }
             if ("/styles.css".equals(path) && "GET".equals(method)) {
                 try {
@@ -169,9 +180,17 @@ public final class Demo {
             body.put("subject", subject);
             body.put("receiver", receiverState);
             body.put("events", recorded);
+            Map<String, Object> pep = EmbeddedPep.statusMap(rp.pep());
+            if (pep != null) body.put("pep", pep);
             return new Result(200, headers(
                     new String[] {"content-type", "application/json"},
                     new String[] {"cache-control", "no-store"}), Json.stringify(body).getBytes(StandardCharsets.UTF_8));
+        }
+
+        /** Stops the receiver and the embedded PEP. Safe when either was never started. */
+        public void stop() {
+            if (receiver != null) receiver.stop();
+            if (rp.pep() != null) rp.pep().stop();
         }
 
         public void remember(SignalsReceiver.SignalEvent event) {
@@ -189,6 +208,46 @@ public final class Demo {
                 sessions.remove(localId);
                 if (receiver != null) receiver.untrack(localId);
             }
+        }
+
+        /**
+         * 401 when nobody is signed in. Otherwise the PEP's status: 200 only
+         * for a Permit, 403 for a Deny or any failure.
+         */
+        private Result enforce(String sid, Access access) {
+            WsFedLogin who = sid == null ? null : sessions.get(sid);
+            if (who == null) return text(401, "text/html; charset=utf-8", shell("<h1>Sign in</h1><p>Sign in to continue.</p>"));
+            Decision decision = receiver == null ? rp.decide(who, access) : rp.decideSession(receiver, sid, who, access);
+            String heading;
+            String detail;
+            if (decision.isPermit()) {
+                heading = "order".equals(access.resourceType) ? "Order" : "Allowed";
+                detail = "Permitted.";
+            } else if (decision.kind() == Decision.Kind.DENY) {
+                heading = "Not allowed";
+                detail = decision.why();
+            } else {
+                heading = "No decision";
+                detail = "could not decide: " + decision.why();
+            }
+            return text(decision.httpStatus(), "text/html; charset=utf-8", shell("<h1>" + esc(heading) + "</h1><p>" + esc(detail) + "</p>"));
+        }
+
+        private Result pepStatus() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            Map<String, Object> status = EmbeddedPep.statusMap(rp.pep());
+            if (status == null) body.put("configured", Boolean.FALSE);
+            else body.putAll(status);
+            return new Result(200, headers(
+                    new String[] {"content-type", "application/json"},
+                    new String[] {"cache-control", "no-store"}), Json.stringify(body).getBytes(StandardCharsets.UTF_8));
+        }
+
+        private static String shell(String main) {
+            return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>WS-Federation</title>"
+                    + "<link rel=\"stylesheet\" href=\"/styles.css\"></head><body>"
+                    + "<nav class=\"site-nav\"><a href=\"/\">Home</a> <a href=\"/orders/42\">Order 42</a> "
+                    + "<a href=\"/attribute-protected\">Attribute</a></nav><main>" + main + "</main></body></html>";
         }
 
         private String pending(String value, int age) {
@@ -260,6 +319,9 @@ public final class Demo {
             write(exchange, result.status, result.headers, result.body);
         });
         server.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (holder[0] != null) holder[0].stop();
+        }));
         System.out.println("wsfed-caep demo on port " + port);
     }
 
@@ -277,12 +339,16 @@ public final class Demo {
             app.receiverState = "not configured (signals are off)";
         } else if (map == null || map.get("transmitter") == null) {
             app.receiverState = "not configured (no ssf block in the configuration file)";
-        } else if (rp.config.privateKey == null || rp.config.certificate == null) {
-            app.receiverState = "not running: the relying party has no private key";
+        } else if (rp.config.ssfTlsClient() == null) {
+            app.receiverState = "not running: no TLS client identity (ssf.clientCertificate and ssf.clientKey, or the relying party's key pair)";
+        } else if (map.containsKey("addSubjects") && !(map.get("addSubjects") instanceof Boolean)) {
+            throw new WsFedError("config", "ssf.addSubjects must be true or false");
         } else {
             SignalsReceiver.Options options = new SignalsReceiver.Options();
             Object interval = map.get("pollIntervalMs");
             options.pollIntervalMs = interval instanceof Number number ? number.intValue() : 5000;
+            options.addSubjects = !map.containsKey("addSubjects") || Boolean.TRUE.equals(map.get("addSubjects"));
+            options.pep = rp.pep();
             try {
                 options.tls = clientTls(rp);
             } catch (Exception err) {
@@ -309,17 +375,16 @@ public final class Demo {
         return app;
     }
 
-    private static HttpClient.Tls clientTls(RelyingParty rp) throws Exception {
+    private static HttpClient.Tls clientTls(RelyingParty rp) {
+        String[] pair = rp.config.ssfTlsClient();
+        if (pair == null) {
+            throw new WsFedError("config", "no TLS client identity (ssf.clientCertificate and ssf.clientKey, or the relying party's key pair)");
+        }
         HttpClient.Tls tls = new HttpClient.Tls();
         tls.ca = rp.config.idpCa;
-        tls.cert = pem("CERTIFICATE", rp.config.certificate.getEncoded());
-        tls.key = pem("PRIVATE KEY", rp.config.privateKey.getEncoded());
+        tls.cert = pair[0];
+        tls.key = pair[1];
         return tls;
-    }
-
-    private static String pem(String label, byte[] der) {
-        String body = Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(der);
-        return "-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n";
     }
 
     public static Map<String, String> endpoints(String realm, String reply, String publicUrl, boolean given, int port) {
